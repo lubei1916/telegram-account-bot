@@ -184,7 +184,8 @@ bot.command('list', async (ctx) => {
 bot.command('balance', async (ctx) => {
   try {
     if (!hasCommandArgs(ctx.message.text)) {
-      await ctx.reply('請先選擇地址類型，再選擇要查詢的餘額。', mainMenu());
+      sessions.set(String(ctx.chat.id), { mode: 'chooseBalanceChain' });
+      await ctx.reply('請選擇要查詢的地址類型。', chainChoiceKeyboard());
       return;
     }
 
