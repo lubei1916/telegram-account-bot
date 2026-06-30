@@ -65,6 +65,11 @@ class BalanceMonitor {
     }
   }
 
+  clearRuntimeCache() {
+    this.tronAccountCache.clear();
+    this.logger.info('Runtime cache cleared');
+  }
+
   async startEth() {
     this.ethProvider = new WebSocketProvider(this.ethWsUrl);
     this.ethProvider.on('block', async (blockNumber) => {
