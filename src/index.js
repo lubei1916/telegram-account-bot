@@ -49,6 +49,7 @@ const monitor = new BalanceMonitor({
   etherscanApiBase: process.env.ETHERSCAN_API_BASE || 'https://api.etherscan.io/api',
   tronFullHost: process.env.TRON_FULL_HOST || 'https://api.trongrid.io',
   tronscanApiBase: process.env.TRONSCAN_API_BASE || 'https://apilist.tronscanapi.com/api',
+  tronscanApiKey: process.env.TRONSCAN_API_KEY || '',
   tronApiKey: process.env.TRON_API_KEY || '',
   tronPollMs: Number(process.env.TRON_POLL_MS || 3000),
   usdtErc20Contract: process.env.USDT_ERC20_CONTRACT || '0xdAC17F958D2ee523a2206206994597C13D831ec7',
