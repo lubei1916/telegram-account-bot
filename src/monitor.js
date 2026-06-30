@@ -21,6 +21,7 @@ class BalanceMonitor {
     tronPollMs,
     usdtErc20Contract,
     usdtTrc20Contract,
+    usdcErc20Contract,
     logger
   }) {
     this.store = store;
@@ -32,6 +33,7 @@ class BalanceMonitor {
     this.tronPollMs = tronPollMs;
     this.usdtErc20Contract = usdtErc20Contract;
     this.usdtTrc20Contract = usdtTrc20Contract;
+    this.usdcErc20Contract = usdcErc20Contract;
     this.logger = logger;
     this.ethProvider = null;
     this.tronWeb = null;
@@ -118,7 +120,8 @@ class BalanceMonitor {
     try {
       const watchers = [
         ...this.store.listByAsset('eth'),
-        ...this.store.listByAsset('usdt-erc20')
+        ...this.store.listByAsset('usdt-erc20'),
+        ...this.store.listByAsset('usdc-erc20')
       ];
       await Promise.allSettled(watchers.map(async (watcher) => {
         const asset = watcher.asset || watcher.chain;
@@ -192,9 +195,9 @@ class BalanceMonitor {
       return this.ethProvider.getBalance(address);
     }
 
-    if (asset === 'usdt-erc20') {
+    if (asset === 'usdt-erc20' || asset === 'usdc-erc20') {
       if (!this.ethProvider) throw new Error('ETH provider is not configured');
-      const contract = new Contract(this.usdtErc20Contract, ERC20_ABI, this.ethProvider);
+      const contract = new Contract(this.getErc20Contract(asset), ERC20_ABI, this.ethProvider);
       return contract.balanceOf(address);
     }
 
@@ -231,6 +234,7 @@ class BalanceMonitor {
     if (asset === 'usdt-trc20') return this.getTrc20Transactions(address, limit);
     if (asset === 'eth') return this.getEthTransactions(address, limit);
     if (asset === 'usdt-erc20') return this.getErc20Transactions(address, limit);
+    if (asset === 'usdc-erc20') return this.getErc20Transactions(address, limit, 'usdc-erc20');
     throw new Error(`Unsupported asset: ${asset}`);
   }
 
@@ -239,6 +243,7 @@ class BalanceMonitor {
     if (asset === 'usdt-trc20') return this.getTrc20Transactions(address, 3);
     if (asset === 'eth' && blockNumber) return this.getEthBlockTransactions(address, blockNumber);
     if (asset === 'usdt-erc20' && blockNumber) return this.getErc20BlockTransactions(address, blockNumber);
+    if (asset === 'usdc-erc20' && blockNumber) return this.getErc20BlockTransactions(address, blockNumber, 'usdc-erc20');
     return this.getTransactions(asset, address, 3);
   }
 
@@ -309,15 +314,15 @@ class BalanceMonitor {
     }));
   }
 
-  async getErc20Transactions(address, limit) {
+  async getErc20Transactions(address, limit, asset = 'usdt-erc20') {
     if (!this.etherscanApiKey) {
-      throw new Error('ETH/USDT-ERC20 歷史交易查詢需要設定 ETHERSCAN_API_KEY');
+      throw new Error('ETH/ERC20 歷史交易查詢需要設定 ETHERSCAN_API_KEY');
     }
 
     const json = await this.etherscanFetch({
       module: 'account',
       action: 'tokentx',
-      contractaddress: this.usdtErc20Contract,
+      contractaddress: this.getErc20Contract(asset),
       address,
       page: '1',
       offset: String(limit),
@@ -349,8 +354,8 @@ class BalanceMonitor {
       }));
   }
 
-  async getErc20BlockTransactions(address, blockNumber) {
-    const contract = new Contract(this.usdtErc20Contract, ERC20_ABI, this.ethProvider);
+  async getErc20BlockTransactions(address, blockNumber, asset = 'usdt-erc20') {
+    const contract = new Contract(this.getErc20Contract(asset), ERC20_ABI, this.ethProvider);
     const logs = await contract.queryFilter(contract.filters.Transfer(), blockNumber, blockNumber);
     const normalized = address.toLowerCase();
 
@@ -377,6 +382,12 @@ class BalanceMonitor {
 
   async tronFetch(url) {
     return this.enqueueTronFetch(() => this.doTronFetch(url));
+  }
+
+  getErc20Contract(asset) {
+    if (asset === 'usdt-erc20') return this.usdtErc20Contract;
+    if (asset === 'usdc-erc20') return this.usdcErc20Contract;
+    throw new Error(`Unsupported ERC20 asset: ${asset}`);
   }
 
   async enqueueTronFetch(task) {
@@ -455,6 +466,7 @@ class BalanceMonitor {
       tronPollMs: this.tronPollMs,
       usdtErc20Contract: this.usdtErc20Contract,
       usdtTrc20Contract: this.usdtTrc20Contract,
+      usdcErc20Contract: this.usdcErc20Contract,
       etherscanHistoryEnabled: Boolean(this.etherscanApiKey),
       watchers: this.store.listAll().length
     };
