@@ -14,6 +14,9 @@ class CurlTelegramBot {
     this.offsetPath = options.offsetPath || '';
     this.offset = this.loadOffset();
     this.updateTimeoutMs = Number(options.updateTimeoutMs || 45_000);
+    this.watchdogMs = Number(options.watchdogMs || 120_000);
+    this.watchdogTimer = null;
+    this.lastPollProgressAt = Date.now();
     this.telegram = {
       sendMessage: (chatId, text, options = {}) => {
         const payload = {
@@ -56,12 +59,14 @@ class CurlTelegramBot {
     const me = await this.callApi('getMe', {}, 15);
     await this.syncOffset();
     this.running = true;
+    this.startWatchdog();
     this.logger.info({ username: me.result.username }, 'Telegram curl polling started');
     this.pollLoop();
   }
 
   async stop() {
     this.running = false;
+    this.stopWatchdog();
   }
 
   async pollLoop() {
@@ -72,6 +77,7 @@ class CurlTelegramBot {
           timeout: 25,
           allowed_updates: ['message']
         }, 35);
+        this.markPollProgress('getUpdates completed');
 
         for (const update of updates.result || []) {
           this.offset = Math.max(this.offset, update.update_id + 1);
@@ -82,15 +88,47 @@ class CurlTelegramBot {
               this.updateTimeoutMs,
               `Telegram update ${update.update_id} handling timed out after ${this.updateTimeoutMs} ms`
             );
+            this.markPollProgress('update handled');
           } catch (error) {
             this.logger.error({ error: error.message, updateId: update.update_id }, 'Telegram update handling failed');
           }
         }
       } catch (error) {
         this.logger.error({ error: error.message }, 'Telegram polling failed');
+        this.markPollProgress('polling error handled');
         await sleep(3000);
       }
     }
+  }
+
+  startWatchdog() {
+    if (!Number.isFinite(this.watchdogMs) || this.watchdogMs <= 0) {
+      this.logger.warn({ watchdogMs: this.watchdogMs }, 'Telegram polling watchdog is disabled');
+      return;
+    }
+
+    this.stopWatchdog();
+    this.lastPollProgressAt = Date.now();
+    this.watchdogTimer = setInterval(() => {
+      const staleMs = Date.now() - this.lastPollProgressAt;
+      if (!this.running || staleMs <= this.watchdogMs) return;
+
+      this.logger.fatal({ staleMs, watchdogMs: this.watchdogMs }, 'Telegram polling watchdog timed out; exiting for platform restart');
+      process.exit(1);
+    }, Math.max(10_000, Math.floor(this.watchdogMs / 3)));
+    this.watchdogTimer.unref?.();
+  }
+
+  stopWatchdog() {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+  }
+
+  markPollProgress(reason) {
+    this.lastPollProgressAt = Date.now();
+    this.logger.debug({ reason }, 'Telegram polling progress');
   }
 
   async handleUpdate(update) {
