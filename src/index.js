@@ -37,6 +37,7 @@ const monitor = new BalanceMonitor({
   tronPollMs: Number(process.env.TRON_POLL_MS || 3000),
   usdtErc20Contract: process.env.USDT_ERC20_CONTRACT || '0xdAC17F958D2ee523a2206206994597C13D831ec7',
   usdtTrc20Contract: process.env.USDT_TRC20_CONTRACT || 'TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj',
+  usdcErc20Contract: process.env.USDC_ERC20_CONTRACT || '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
   logger
 });
 
@@ -94,7 +95,8 @@ bot.command('addall', async (ctx) => {
       { asset: 'trx', address: tronAddress },
       { asset: 'usdt-trc20', address: tronAddress },
       { asset: 'eth', address: ethAddress },
-      { asset: 'usdt-erc20', address: ethAddress }
+      { asset: 'usdt-erc20', address: ethAddress },
+      { asset: 'usdc-erc20', address: ethAddress }
     ];
 
     const results = [];
@@ -112,7 +114,7 @@ bot.command('addall', async (ctx) => {
     }
 
     await ctx.reply([
-      '已同時啟用四個幣種通知。',
+      '已同時啟用五個幣種通知。',
       `TRON 地址：${tronAddress}`,
       `ETH 地址：${ethAddress}`,
       label ? `備註：${label}` : null,
@@ -142,7 +144,8 @@ bot.command('removeall', async (ctx) => {
       { asset: 'trx', address: tronAddress },
       { asset: 'usdt-trc20', address: tronAddress },
       { asset: 'eth', address: ethAddress },
-      { asset: 'usdt-erc20', address: ethAddress }
+      { asset: 'usdt-erc20', address: ethAddress },
+      { asset: 'usdc-erc20', address: ethAddress }
     ];
 
     const removed = targets.reduce((count, target) => {
@@ -213,27 +216,39 @@ bot.onText(async (ctx) => {
     return;
   }
 
-  if (text === 'TRON 地址') {
-    sessions.set(chatId, { mode: 'categoryAddress', chain: 'tron' });
-    await ctx.reply('請直接貼上 T 開頭的 TRON 地址。', categoryAddressKeyboard('tron'));
-    return;
-  }
-
-  if (text === 'ETH 地址') {
-    sessions.set(chatId, { mode: 'categoryAddress', chain: 'eth' });
-    await ctx.reply('請直接貼上 0x 開頭的 ETH 地址。', categoryAddressKeyboard('eth'));
-    return;
-  }
-
   const session = sessions.get(chatId);
   if (session) {
     await handleSession(ctx, session, text);
     return;
   }
 
+  if (text === '添加監控地址' || text === '新增監控地址') {
+    sessions.set(chatId, { mode: 'chooseAddChain' });
+    await ctx.reply('請選擇要添加的地址類型。', chainChoiceKeyboard());
+    return;
+  }
+
+  if (text === '查詢餘額') {
+    sessions.set(chatId, { mode: 'chooseBalanceChain' });
+    await ctx.reply('請選擇要查詢的地址類型。', chainChoiceKeyboard());
+    return;
+  }
+
+  if (text === 'TRON 地址') {
+    sessions.set(chatId, { mode: 'chainAutoAddress', chain: 'tron' });
+    await ctx.reply('請直接貼上 T 開頭的 TRON 地址，會自動監控 TRX 和 USDT-TRC20。', categoryAddressKeyboard('tron'));
+    return;
+  }
+
+  if (text === 'ETH 地址') {
+    sessions.set(chatId, { mode: 'chainAutoAddress', chain: 'eth' });
+    await ctx.reply('請直接貼上 0x 開頭的 ETH 地址，會自動監控 ETH、USDT-ERC20 和 USDC-ERC20。', categoryAddressKeyboard('eth'));
+    return;
+  }
+
   if (text === '新增四幣種') {
-    sessions.set(chatId, { mode: 'all', step: 'tronAddress' });
-    await ctx.reply('請發送 TRON 地址，也就是 T 開頭的地址。', cancelKeyboard());
+    sessions.set(chatId, { mode: 'chooseAddChain' });
+    await ctx.reply('請選擇要添加的地址類型。', chainChoiceKeyboard());
     return;
   }
 
@@ -306,6 +321,7 @@ async function sendStatus(ctx) {
     `TRON 輪詢間隔：${status.tronPollMs} ms`,
     `ETH 歷史交易：${status.etherscanHistoryEnabled ? '已啟用' : '需要 ETHERSCAN_API_KEY'}`,
     `USDT ERC20 合約：${status.usdtErc20Contract}`,
+    `USDC ERC20 合約：${status.usdcErc20Contract}`,
     `USDT TRC20 合約：${status.usdtTrc20Contract}`
   ].join('\n'), mainMenu());
 }
@@ -361,6 +377,31 @@ async function beginSingleAdd(ctx, asset) {
 }
 
 async function handleSession(ctx, session, text) {
+  if (session.mode === 'chooseAddChain') {
+    await handleChooseChainSession(ctx, session, text, 'add');
+    return;
+  }
+
+  if (session.mode === 'chooseBalanceChain') {
+    await handleChooseChainSession(ctx, session, text, 'balance');
+    return;
+  }
+
+  if (session.mode === 'chainAutoAddress') {
+    await handleChainAutoAddressSession(ctx, session, text);
+    return;
+  }
+
+  if (session.mode === 'chainAutoLabel') {
+    await handleChainAutoLabelSession(ctx, session, text);
+    return;
+  }
+
+  if (session.mode === 'chainBalanceAddress') {
+    await handleChainBalanceAddressSession(ctx, session, text);
+    return;
+  }
+
   if (session.mode === 'categoryAddress') {
     await handleCategoryAddressSession(ctx, session, text);
     return;
@@ -394,6 +435,103 @@ async function handleSession(ctx, session, text) {
   await handleAllSession(ctx, session, text);
 }
 
+async function handleChooseChainSession(ctx, session, text, action) {
+  const chain = chainFromText(text);
+  if (!chain) {
+    await ctx.reply('請選擇 TRON 地址或 ETH 地址。', chainChoiceKeyboard());
+    return;
+  }
+
+  if (action === 'add') {
+    sessions.set(String(ctx.chat.id), { mode: 'chainAutoAddress', chain });
+    await ctx.reply(chain === 'tron'
+      ? '請貼上 T 開頭的 TRON 地址，會自動監控 TRX 和 USDT-TRC20。'
+      : '請貼上 0x 開頭的 ETH 地址，會自動監控 ETH、USDT-ERC20 和 USDC-ERC20。', categoryAddressKeyboard(chain));
+    return;
+  }
+
+  sessions.set(String(ctx.chat.id), { mode: 'chainBalanceAddress', chain });
+  await ctx.reply(chain === 'tron'
+    ? '請貼上 T 開頭的 TRON 地址，會同時查詢 TRX 和 USDT-TRC20。'
+    : '請貼上 0x 開頭的 ETH 地址，會同時查詢 ETH、USDT-ERC20 和 USDC-ERC20。', categoryAddressKeyboard(chain));
+}
+
+async function handleChainAutoAddressSession(ctx, session, text) {
+  const chatId = String(ctx.chat.id);
+
+  try {
+    const address = normalizeAddress(chainPrimaryAsset(session.chain), text);
+    const balances = await getChainBalances(session.chain, address);
+    sessions.set(chatId, {
+      mode: 'chainAutoLabel',
+      chain: session.chain,
+      address,
+      balances: Object.fromEntries(balances.map((item) => [item.asset, String(item.balance)]))
+    });
+
+    await ctx.reply([
+      session.chain === 'tron' ? '已讀取 TRON 地址。' : '已讀取 ETH 地址。',
+      `地址：${address}`,
+      '',
+      ...formatBalanceLines(balances),
+      '',
+      '請輸入備註，例如：多簽、熱錢包、交易所。'
+    ].join('\n'), skipKeyboard());
+  } catch (error) {
+    const hint = session.chain === 'tron' ? 'T 開頭的 TRON 地址' : '0x 開頭的 ETH 地址';
+    await ctx.reply(`地址或查詢失敗：${errorMessage(error)}\n\n請重新貼上 ${hint}，或點「取消」。`, categoryAddressKeyboard(session.chain));
+  }
+}
+
+async function handleChainAutoLabelSession(ctx, session, text) {
+  const label = text === '略過備註' ? '' : text;
+  const targets = getChainAssets(session.chain).map((asset) => ({
+    asset,
+    address: session.address,
+    balance: session.balances[asset] || '0'
+  }));
+
+  const results = [];
+  for (const target of targets) {
+    const { created } = store.add({
+      chatId: ctx.chat.id,
+      asset: target.asset,
+      address: target.address,
+      label,
+      lastBalance: target.balance
+    });
+    results.push(`${created ? '已新增' : '已更新'} ${assetName(target.asset)}：${formatAssetBalance(target.asset, target.balance)}`);
+  }
+
+  sessions.delete(String(ctx.chat.id));
+  await ctx.reply([
+    session.chain === 'tron' ? '已啟用 TRON 地址監控。' : '已啟用 ETH 地址監控。',
+    `地址：${session.address}`,
+    label ? `備註：${label}` : null,
+    '',
+    ...results
+  ].filter(Boolean).join('\n'), mainMenu());
+}
+
+async function handleChainBalanceAddressSession(ctx, session, text) {
+  const chatId = String(ctx.chat.id);
+
+  try {
+    const address = normalizeAddress(chainPrimaryAsset(session.chain), text);
+    const balances = await getChainBalances(session.chain, address);
+    sessions.delete(chatId);
+    await ctx.reply([
+      session.chain === 'tron' ? 'TRON 餘額查詢結果' : 'ETH 餘額查詢結果',
+      `地址：${address}`,
+      '',
+      ...formatBalanceLines(balances)
+    ].join('\n'), mainMenu());
+  } catch (error) {
+    const hint = session.chain === 'tron' ? 'T 開頭的 TRON 地址' : '0x 開頭的 ETH 地址';
+    await ctx.reply(`查詢失敗：${errorMessage(error)}\n\n請重新貼上 ${hint}，或點「取消」。`, categoryAddressKeyboard(session.chain));
+  }
+}
+
 async function handleCategoryAddressSession(ctx, session, text) {
   const chatId = String(ctx.chat.id);
 
@@ -421,6 +559,36 @@ async function handleCategoryReadySession(ctx, session, text) {
   const action = addressActionFromText(session.chain, text);
   if (!action) {
     await ctx.reply('請從下方子菜單選擇操作。', addressActionKeyboard(session.chain));
+    return;
+  }
+
+  if (action.kind === 'chainAdd') {
+    const balances = await getChainBalances(session.chain, session.address);
+    sessions.set(String(ctx.chat.id), {
+      mode: 'chainAutoLabel',
+      chain: session.chain,
+      address: session.address,
+      balances: Object.fromEntries(balances.map((item) => [item.asset, String(item.balance)]))
+    });
+    await ctx.reply([
+      session.chain === 'tron' ? '已讀取 TRON 地址。' : '已讀取 ETH 地址。',
+      `地址：${session.address}`,
+      '',
+      ...formatBalanceLines(balances),
+      '',
+      '請輸入備註，例如：多簽、熱錢包、交易所。'
+    ].join('\n'), skipKeyboard());
+    return;
+  }
+
+  if (action.kind === 'chainBalance') {
+    const balances = await getChainBalances(session.chain, session.address);
+    await ctx.reply([
+      session.chain === 'tron' ? 'TRON 餘額查詢結果' : 'ETH 餘額查詢結果',
+      `地址：${session.address}`,
+      '',
+      ...formatBalanceLines(balances)
+    ].join('\n'), addressActionKeyboard(session.chain));
     return;
   }
 
@@ -657,7 +825,8 @@ async function handleAllSession(ctx, session, text) {
     { asset: 'trx', address: session.tronAddress },
     { asset: 'usdt-trc20', address: session.tronAddress },
     { asset: 'eth', address: session.ethAddress },
-    { asset: 'usdt-erc20', address: session.ethAddress }
+    { asset: 'usdt-erc20', address: session.ethAddress },
+    { asset: 'usdc-erc20', address: session.ethAddress }
   ];
 
   try {
@@ -676,7 +845,7 @@ async function handleAllSession(ctx, session, text) {
 
     sessions.delete(chatId);
     await ctx.reply([
-      '已同時啟用四個幣種通知。',
+      '已同時啟用五個幣種通知。',
       `TRON 地址：${session.tronAddress}`,
       `ETH 地址：${session.ethAddress}`,
       label ? `備註：${label}` : null,
@@ -684,14 +853,44 @@ async function handleAllSession(ctx, session, text) {
       ...results
     ].filter(Boolean).join('\n'), mainMenu());
   } catch (error) {
-    await ctx.reply(`新增四幣種失敗：${errorMessage(error)}\n\n請稍後再試，或點「取消」。`, cancelKeyboard());
+    await ctx.reply(`批量新增失敗：${errorMessage(error)}\n\n請稍後再試，或點「取消」。`, cancelKeyboard());
   }
+}
+
+function chainFromText(text) {
+  if (text === 'TRON 地址') return 'tron';
+  if (text === 'ETH 地址') return 'eth';
+  return null;
+}
+
+function chainPrimaryAsset(chain) {
+  return chain === 'tron' ? 'trx' : 'eth';
+}
+
+function getChainAssets(chain) {
+  if (chain === 'tron') return ['trx', 'usdt-trc20'];
+  if (chain === 'eth') return ['eth', 'usdt-erc20', 'usdc-erc20'];
+  throw new Error(`Unsupported chain: ${chain}`);
+}
+
+async function getChainBalances(chain, address) {
+  const balances = [];
+  for (const asset of getChainAssets(chain)) {
+    balances.push({ asset, balance: await monitor.getBalance(asset, address) });
+  }
+  return balances;
+}
+
+function formatBalanceLines(balances) {
+  return balances.map((item) => {
+    return `${assetName(item.asset)}：${formatAssetBalance(item.asset, item.balance)}`;
+  });
 }
 
 function parseAddressCommand(text) {
   const parts = String(text || '').trim().split(/\s+/);
   const asset = normalizeAsset(parts[1]);
-  if (!asset) throw new Error('資產必須是 trx、eth、usdt-trc20 或 usdt-erc20');
+  if (!asset) throw new Error('資產必須是 trx、eth、usdt-trc20、usdt-erc20 或 usdc-erc20');
 
   const rawAddress = parts[2];
   if (!rawAddress) throw new Error('缺少地址');
@@ -716,7 +915,7 @@ function parseAllCommand(text) {
 function normalizeAddress(asset, address) {
   if (!address) throw new Error('缺少地址');
 
-  if (asset === 'eth' || asset === 'usdt-erc20') {
+  if (asset === 'eth' || asset === 'usdt-erc20' || asset === 'usdc-erc20') {
     if (!isAddress(address)) throw new Error('ETH 地址格式不正確');
     return getAddress(address);
   }
@@ -736,12 +935,24 @@ function mainMenu() {
   return {
     reply_markup: {
       keyboard: [
-        [{ text: 'TRON 地址' }, { text: 'ETH 地址' }],
-        [{ text: '新增四幣種' }],
+        [{ text: '添加監控地址' }, { text: '查詢餘額' }],
         [{ text: '刪除監控地址' }],
         [{ text: '監控列表' }, { text: '狀態' }]
       ],
       resize_keyboard: true
+    }
+  };
+}
+
+function chainChoiceKeyboard() {
+  return {
+    reply_markup: {
+      keyboard: [
+        [{ text: 'TRON 地址' }, { text: 'ETH 地址' }],
+        [{ text: '主菜單' }, { text: '取消' }]
+      ],
+      resize_keyboard: true,
+      one_time_keyboard: true
     }
   };
 }
@@ -769,8 +980,7 @@ function tronMenu() {
   return {
     reply_markup: {
       keyboard: [
-        [{ text: 'TRX 新增監控' }, { text: 'USDT-TRC20 新增監控' }],
-        [{ text: 'TRX 查餘額' }, { text: 'USDT-TRC20 查餘額' }],
+        [{ text: '添加監控地址' }, { text: '查詢餘額' }],
         [{ text: 'TRX 查交易' }, { text: 'USDT-TRC20 查交易' }],
         [{ text: '主菜單' }]
       ],
@@ -782,20 +992,17 @@ function tronMenu() {
 function addressActionFromText(chain, text) {
   const actions = chain === 'tron'
     ? {
-        'TRX 新增監控': { kind: 'add', asset: 'trx' },
-        'USDT-TRC20 新增監控': { kind: 'add', asset: 'usdt-trc20' },
-        'TRX 查餘額': { kind: 'balance', asset: 'trx' },
-        'USDT-TRC20 查餘額': { kind: 'balance', asset: 'usdt-trc20' },
+        '添加監控地址': { kind: 'chainAdd' },
+        '查詢餘額': { kind: 'chainBalance' },
         'TRX 查交易': { kind: 'tx', asset: 'trx' },
         'USDT-TRC20 查交易': { kind: 'tx', asset: 'usdt-trc20' }
       }
     : {
-        'ETH 新增監控': { kind: 'add', asset: 'eth' },
-        'USDT-ERC20 新增監控': { kind: 'add', asset: 'usdt-erc20' },
-        'ETH 查餘額': { kind: 'balance', asset: 'eth' },
-        'USDT-ERC20 查餘額': { kind: 'balance', asset: 'usdt-erc20' },
+        '添加監控地址': { kind: 'chainAdd' },
+        '查詢餘額': { kind: 'chainBalance' },
         'ETH 查交易': { kind: 'tx', asset: 'eth' },
-        'USDT-ERC20 查交易': { kind: 'tx', asset: 'usdt-erc20' }
+        'USDT-ERC20 查交易': { kind: 'tx', asset: 'usdt-erc20' },
+        'USDC-ERC20 查交易': { kind: 'tx', asset: 'usdc-erc20' }
       };
 
   return actions[text];
@@ -805,9 +1012,9 @@ function ethMenu() {
   return {
     reply_markup: {
       keyboard: [
-        [{ text: 'ETH 新增監控' }, { text: 'USDT-ERC20 新增監控' }],
-        [{ text: 'ETH 查餘額' }, { text: 'USDT-ERC20 查餘額' }],
+        [{ text: '添加監控地址' }, { text: '查詢餘額' }],
         [{ text: 'ETH 查交易' }, { text: 'USDT-ERC20 查交易' }],
+        [{ text: 'USDC-ERC20 查交易' }],
         [{ text: '主菜單' }]
       ],
       resize_keyboard: true
@@ -889,14 +1096,17 @@ function classifiedActionFromText(text) {
     'USDT-TRC20 新增監控': { mode: 'single', asset: 'usdt-trc20', prompt: '新增 USDT-TRC20 監控' },
     'ETH 新增監控': { mode: 'single', asset: 'eth', prompt: '新增 ETH 監控' },
     'USDT-ERC20 新增監控': { mode: 'single', asset: 'usdt-erc20', prompt: '新增 USDT-ERC20 監控' },
+    'USDC-ERC20 新增監控': { mode: 'single', asset: 'usdc-erc20', prompt: '新增 USDC-ERC20 監控' },
     'TRX 查餘額': { mode: 'queryBalance', asset: 'trx', prompt: '查詢 TRX 餘額' },
     'USDT-TRC20 查餘額': { mode: 'queryBalance', asset: 'usdt-trc20', prompt: '查詢 USDT-TRC20 餘額' },
     'ETH 查餘額': { mode: 'queryBalance', asset: 'eth', prompt: '查詢 ETH 餘額' },
     'USDT-ERC20 查餘額': { mode: 'queryBalance', asset: 'usdt-erc20', prompt: '查詢 USDT-ERC20 餘額' },
+    'USDC-ERC20 查餘額': { mode: 'queryBalance', asset: 'usdc-erc20', prompt: '查詢 USDC-ERC20 餘額' },
     'TRX 查交易': { mode: 'queryTx', asset: 'trx', prompt: '查詢 TRX 交易紀錄' },
     'USDT-TRC20 查交易': { mode: 'queryTx', asset: 'usdt-trc20', prompt: '查詢 USDT-TRC20 交易紀錄' },
     'ETH 查交易': { mode: 'queryTx', asset: 'eth', prompt: '查詢 ETH 交易紀錄' },
-    'USDT-ERC20 查交易': { mode: 'queryTx', asset: 'usdt-erc20', prompt: '查詢 USDT-ERC20 交易紀錄' }
+    'USDT-ERC20 查交易': { mode: 'queryTx', asset: 'usdt-erc20', prompt: '查詢 USDT-ERC20 交易紀錄' },
+    'USDC-ERC20 查交易': { mode: 'queryTx', asset: 'usdc-erc20', prompt: '查詢 USDC-ERC20 交易紀錄' }
   }[text];
 }
 
@@ -947,11 +1157,11 @@ function helpText() {
   return [
     'ET 監控機器人',
     '',
-    '推薦用法：直接點下方分類菜單。',
-    'TRON 地址：TRX / USDT-TRC20 新增、查餘額、查交易。',
-    'ETH 地址：ETH / USDT-ERC20 新增、查餘額、查交易。',
-    '主菜單選「刪除監控地址」後，可以按編號只刪除單個監控項。',
-    '新增流程：選分類 -> 選功能 -> 貼地址 -> 輸入備註。',
+    '推薦用法：直接點主菜單。',
+    '添加監控地址：TRON 自動監控 TRX / USDT-TRC20；ETH 自動監控 ETH / USDT-ERC20 / USDC-ERC20。',
+    '查詢餘額：TRON 自動顯示 TRX / USDT-TRC20；ETH 自動顯示 ETH / USDT-ERC20 / USDC-ERC20。',
+    '刪除監控地址：按編號只刪除單個監控項。',
+    '新增流程：添加監控地址 -> 選 TRON 或 ETH -> 貼地址 -> 輸入備註。',
     '',
     '進階指令：',
     '/addall T地址 0x地址 備註',
@@ -959,20 +1169,24 @@ function helpText() {
     '/add eth 0x地址 備註',
     '/add usdt-trc20 T地址 備註',
     '/add usdt-erc20 0x地址 備註',
+    '/add usdc-erc20 0x地址 備註',
     '/removeall T地址 0x地址',
     '/remove trx T地址',
     '/remove eth 0x地址',
     '/remove usdt-trc20 T地址',
     '/remove usdt-erc20 0x地址',
+    '/remove usdc-erc20 0x地址',
     '/list',
     '/balance trx T地址',
     '/balance eth 0x地址',
     '/balance usdt-trc20 T地址',
     '/balance usdt-erc20 0x地址',
+    '/balance usdc-erc20 0x地址',
     '/tx trx T地址',
     '/tx usdt-trc20 T地址',
     '/tx eth 0x地址',
     '/tx usdt-erc20 0x地址',
+    '/tx usdc-erc20 0x地址',
     '/status'
   ].join('\n');
 }
