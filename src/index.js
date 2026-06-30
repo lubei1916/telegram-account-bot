@@ -18,6 +18,8 @@ if (!token) {
 const storagePath = path.resolve(process.env.STORAGE_PATH || './data/watchers.json');
 const adminUserIds = parseAdminUserIds(process.env.ADMIN_USER_IDS);
 const sessions = new Map();
+const dailyCacheCleanupMs = Number(process.env.DAILY_CACHE_CLEANUP_MS || 24 * 60 * 60 * 1000);
+let dailyCacheCleanupTimer = null;
 
 const store = new Store(storagePath);
 store.load();
@@ -235,6 +237,16 @@ bot.onText(async (ctx) => {
     return;
   }
 
+  if (text === '刪除監控地址') {
+    await sendDeleteList(ctx);
+    return;
+  }
+
+  if (isLegacyDeleteButton(text)) {
+    await sendDeleteList(ctx);
+    return;
+  }
+
   const classifiedAction = classifiedActionFromText(text);
   if (classifiedAction) {
     sessions.set(chatId, {
@@ -303,6 +315,7 @@ bot.catch((error, ctx) => {
 
 async function main() {
   await monitor.start();
+  startDailyCacheCleanup();
   await bot.launch();
   logger.info({ storagePath }, 'Telegram balance monitor bot started');
 }
@@ -323,7 +336,21 @@ async function shutdown(signal) {
     if (error.message !== 'Bot is not running!') throw error;
   }
   await monitor.stop();
+  if (dailyCacheCleanupTimer) clearInterval(dailyCacheCleanupTimer);
   process.exit(0);
+}
+
+function startDailyCacheCleanup() {
+  if (!Number.isFinite(dailyCacheCleanupMs) || dailyCacheCleanupMs <= 0) {
+    logger.warn({ dailyCacheCleanupMs }, 'Daily cache cleanup is disabled');
+    return;
+  }
+
+  dailyCacheCleanupTimer = setInterval(() => {
+    monitor.clearRuntimeCache();
+  }, dailyCacheCleanupMs);
+  dailyCacheCleanupTimer.unref?.();
+  logger.info({ dailyCacheCleanupMs }, 'Daily cache cleanup scheduled');
 }
 
 async function beginSingleAdd(ctx, asset) {
@@ -355,6 +382,11 @@ async function handleSession(ctx, session, text) {
 
   if (session.mode === 'queryBalance' || session.mode === 'queryTx' || session.mode === 'deleteMonitor') {
     await handleDirectQuerySession(ctx, session, text);
+    return;
+  }
+
+  if (session.mode === 'deleteChoice') {
+    await handleDeleteChoiceSession(ctx, session, text);
     return;
   }
 
@@ -408,16 +440,6 @@ async function handleCategoryReadySession(ctx, session, text) {
       disable_web_page_preview: true,
       ...addressActionKeyboard(session.chain)
     });
-    return;
-  }
-
-  if (action.kind === 'delete') {
-    const removed = store.remove(ctx.chat.id, action.asset, session.address);
-    await ctx.reply([
-      removed ? '已刪除監控。' : '找不到這個監控項。',
-      `資產：${assetName(action.asset)}`,
-      `地址：${session.address}`
-    ].join('\n'), addressActionKeyboard(session.chain));
     return;
   }
 
@@ -496,6 +518,63 @@ async function handleDirectQuerySession(ctx, session, text) {
   } catch (error) {
     await ctx.reply(`查詢失敗：${errorMessage(error)}\n\n請重新發送地址，或返回上一層。`, backKeyboard(session.asset));
   }
+}
+
+async function sendDeleteList(ctx) {
+  const watchers = store.list(ctx.chat.id);
+  if (watchers.length === 0) {
+    await ctx.reply('目前沒有可以刪除的監控地址。', mainMenu());
+    return;
+  }
+
+  sessions.set(String(ctx.chat.id), { mode: 'deleteChoice' });
+
+  const lines = watchers.map((watcher, index) => {
+    const asset = watcher.asset || watcher.chain;
+    const label = watcher.label ? ` (${watcher.label})` : '';
+    return [
+      `${index + 1}. ${assetName(asset)}${label}`,
+      `地址：${watcher.address}`,
+      `上次餘額：${formatAssetBalance(asset, watcher.lastBalance)}`
+    ].join('\n');
+  });
+
+  await ctx.reply([
+    '請選擇要刪除的單個監控項。',
+    '只會刪除你選中的那一項，不會刪除其他地址。',
+    '',
+    ...lines
+  ].join('\n\n'), deleteChoiceKeyboard(watchers));
+}
+
+async function handleDeleteChoiceSession(ctx, session, text) {
+  const chatId = String(ctx.chat.id);
+  const watchers = store.list(ctx.chat.id);
+  const match = String(text || '').trim().match(/^(?:刪除\s*)?(\d+)$/);
+  const index = match ? Number(match[1]) - 1 : -1;
+  const watcher = watchers[index];
+
+  if (!watcher) {
+    if (watchers.length === 0) {
+      sessions.delete(chatId);
+      await ctx.reply('目前沒有可以刪除的監控地址。', mainMenu());
+      return;
+    }
+
+    await ctx.reply('請從下方選擇要刪除的編號，例如「刪除 1」。', deleteChoiceKeyboard(watchers));
+    return;
+  }
+
+  const asset = watcher.asset || watcher.chain;
+  const removed = store.removeById(ctx.chat.id, watcher.id);
+  sessions.delete(chatId);
+
+  await ctx.reply([
+    removed ? '已刪除單個監控項。' : '找不到這個監控項，可能已經刪除。',
+    `資產：${assetName(asset)}`,
+    `地址：${watcher.address}`,
+    watcher.label ? `備註：${watcher.label}` : null
+  ].filter(Boolean).join('\n'), mainMenu());
 }
 
 async function handleSingleSession(ctx, session, text) {
@@ -658,8 +737,7 @@ function mainMenu() {
       keyboard: [
         [{ text: 'TRON 地址' }, { text: 'ETH 地址' }],
         [{ text: '新增四幣種' }],
-        [{ text: 'TRX 刪除監控' }, { text: 'USDT-TRC20 刪除監控' }],
-        [{ text: 'ETH 刪除監控' }, { text: 'USDT-ERC20 刪除監控' }],
+        [{ text: '刪除監控地址' }],
         [{ text: '監控列表' }, { text: '狀態' }]
       ],
       resize_keyboard: true
@@ -691,7 +769,6 @@ function tronMenu() {
     reply_markup: {
       keyboard: [
         [{ text: 'TRX 新增監控' }, { text: 'USDT-TRC20 新增監控' }],
-        [{ text: 'TRX 刪除監控' }, { text: 'USDT-TRC20 刪除監控' }],
         [{ text: 'TRX 查餘額' }, { text: 'USDT-TRC20 查餘額' }],
         [{ text: 'TRX 查交易' }, { text: 'USDT-TRC20 查交易' }],
         [{ text: '主菜單' }]
@@ -706,8 +783,6 @@ function addressActionFromText(chain, text) {
     ? {
         'TRX 新增監控': { kind: 'add', asset: 'trx' },
         'USDT-TRC20 新增監控': { kind: 'add', asset: 'usdt-trc20' },
-        'TRX 刪除監控': { kind: 'delete', asset: 'trx' },
-        'USDT-TRC20 刪除監控': { kind: 'delete', asset: 'usdt-trc20' },
         'TRX 查餘額': { kind: 'balance', asset: 'trx' },
         'USDT-TRC20 查餘額': { kind: 'balance', asset: 'usdt-trc20' },
         'TRX 查交易': { kind: 'tx', asset: 'trx' },
@@ -716,8 +791,6 @@ function addressActionFromText(chain, text) {
     : {
         'ETH 新增監控': { kind: 'add', asset: 'eth' },
         'USDT-ERC20 新增監控': { kind: 'add', asset: 'usdt-erc20' },
-        'ETH 刪除監控': { kind: 'delete', asset: 'eth' },
-        'USDT-ERC20 刪除監控': { kind: 'delete', asset: 'usdt-erc20' },
         'ETH 查餘額': { kind: 'balance', asset: 'eth' },
         'USDT-ERC20 查餘額': { kind: 'balance', asset: 'usdt-erc20' },
         'ETH 查交易': { kind: 'tx', asset: 'eth' },
@@ -732,7 +805,6 @@ function ethMenu() {
     reply_markup: {
       keyboard: [
         [{ text: 'ETH 新增監控' }, { text: 'USDT-ERC20 新增監控' }],
-        [{ text: 'ETH 刪除監控' }, { text: 'USDT-ERC20 刪除監控' }],
         [{ text: 'ETH 查餘額' }, { text: 'USDT-ERC20 查餘額' }],
         [{ text: 'ETH 查交易' }, { text: 'USDT-ERC20 查交易' }],
         [{ text: '主菜單' }]
@@ -773,6 +845,23 @@ function skipKeyboard() {
   };
 }
 
+function deleteChoiceKeyboard(watchers) {
+  const buttons = watchers.map((watcher, index) => ({ text: `刪除 ${index + 1}` }));
+  const rows = [];
+  for (let index = 0; index < buttons.length; index += 2) {
+    rows.push(buttons.slice(index, index + 2));
+  }
+  rows.push([{ text: '主菜單' }, { text: '取消' }]);
+
+  return {
+    reply_markup: {
+      keyboard: rows,
+      resize_keyboard: true,
+      one_time_keyboard: true
+    }
+  };
+}
+
 function errorMessage(error) {
   if (!error) return '未知錯誤';
   if (error.message) return error.message;
@@ -784,16 +873,21 @@ function errorMessage(error) {
   }
 }
 
+function isLegacyDeleteButton(text) {
+  return [
+    'TRX 刪除監控',
+    'USDT-TRC20 刪除監控',
+    'ETH 刪除監控',
+    'USDT-ERC20 刪除監控'
+  ].includes(text);
+}
+
 function classifiedActionFromText(text) {
   return {
     'TRX 新增監控': { mode: 'single', asset: 'trx', prompt: '新增 TRX 監控' },
     'USDT-TRC20 新增監控': { mode: 'single', asset: 'usdt-trc20', prompt: '新增 USDT-TRC20 監控' },
     'ETH 新增監控': { mode: 'single', asset: 'eth', prompt: '新增 ETH 監控' },
     'USDT-ERC20 新增監控': { mode: 'single', asset: 'usdt-erc20', prompt: '新增 USDT-ERC20 監控' },
-    'TRX 刪除監控': { mode: 'deleteMonitor', asset: 'trx', prompt: '刪除 TRX 監控' },
-    'USDT-TRC20 刪除監控': { mode: 'deleteMonitor', asset: 'usdt-trc20', prompt: '刪除 USDT-TRC20 監控' },
-    'ETH 刪除監控': { mode: 'deleteMonitor', asset: 'eth', prompt: '刪除 ETH 監控' },
-    'USDT-ERC20 刪除監控': { mode: 'deleteMonitor', asset: 'usdt-erc20', prompt: '刪除 USDT-ERC20 監控' },
     'TRX 查餘額': { mode: 'queryBalance', asset: 'trx', prompt: '查詢 TRX 餘額' },
     'USDT-TRC20 查餘額': { mode: 'queryBalance', asset: 'usdt-trc20', prompt: '查詢 USDT-TRC20 餘額' },
     'ETH 查餘額': { mode: 'queryBalance', asset: 'eth', prompt: '查詢 ETH 餘額' },
@@ -853,9 +947,9 @@ function helpText() {
     'ET 監控機器人',
     '',
     '推薦用法：直接點下方分類菜單。',
-    'TRON 地址：TRX / USDT-TRC20 新增、刪除、查餘額、查交易。',
-    'ETH 地址：ETH / USDT-ERC20 新增、刪除、查餘額、查交易。',
-    '主菜單也可以直接選擇刪除監控，再貼對應地址。',
+    'TRON 地址：TRX / USDT-TRC20 新增、查餘額、查交易。',
+    'ETH 地址：ETH / USDT-ERC20 新增、查餘額、查交易。',
+    '主菜單選「刪除監控地址」後，可以按編號只刪除單個監控項。',
     '新增流程：選分類 -> 選功能 -> 貼地址 -> 輸入備註。',
     '',
     '進階指令：',
