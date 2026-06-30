@@ -91,6 +91,18 @@ class Store {
     return removed;
   }
 
+  removeById(chatId, watcherId) {
+    const before = this.data.watchers.length;
+
+    this.data.watchers = this.data.watchers.filter((watcher) => {
+      return !(String(watcher.chatId) === String(chatId) && watcher.id === watcherId);
+    });
+
+    const removed = before - this.data.watchers.length;
+    if (removed > 0) this.save();
+    return removed;
+  }
+
   updateBalance(watcherId, balance) {
     const watcher = this.data.watchers.find((item) => item.id === watcherId);
     if (!watcher) return null;
