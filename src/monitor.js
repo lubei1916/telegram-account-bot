@@ -40,6 +40,9 @@ class BalanceMonitor {
     this.lastEthBlock = null;
     this.checkingEth = false;
     this.checkingTrx = false;
+    this.tronAccountCache = new Map();
+    this.tronFetchQueue = Promise.resolve();
+    this.lastTronFetchAt = 0;
   }
 
   async start() {
@@ -127,15 +130,20 @@ class BalanceMonitor {
     this.checkingTrx = true;
 
     try {
+      this.tronAccountCache.clear();
       const watchers = [
         ...this.store.listByAsset('trx'),
         ...this.store.listByAsset('usdt-trc20')
       ];
-      await Promise.allSettled(watchers.map(async (watcher) => {
+      for (const watcher of watchers) {
         const asset = watcher.asset || watcher.chain;
-        const balance = await this.getBalance(asset, watcher.address);
-        await this.handleBalance(asset, watcher, balance, 'poll');
-      }));
+        try {
+          const balance = await this.getBalance(asset, watcher.address);
+          await this.handleBalance(asset, watcher, balance, 'poll');
+        } catch (error) {
+          this.logger.warn({ error: error.message, asset, address: watcher.address }, 'TRON watcher check skipped');
+        }
+      }
     } finally {
       this.checkingTrx = false;
     }
@@ -197,17 +205,7 @@ class BalanceMonitor {
   }
 
   async getTrxBalance(address) {
-    const url = `${this.tronFullHost}/v1/accounts/${encodeURIComponent(address)}`;
-    const headers = {};
-    if (this.tronApiKey) headers['TRON-PRO-API-KEY'] = this.tronApiKey;
-
-    const response = await fetch(url, { headers });
-    if (!response.ok) {
-      throw new Error(`TRON API error ${response.status}: ${await response.text()}`);
-    }
-
-    const json = await response.json();
-    const account = Array.isArray(json.data) ? json.data[0] : null;
+    const account = await this.getTronAccount(address);
     return BigInt(account?.balance || 0);
   }
 
@@ -373,6 +371,34 @@ class BalanceMonitor {
   }
 
   async tronFetch(url) {
+    return this.enqueueTronFetch(() => this.doTronFetch(url));
+  }
+
+  async enqueueTronFetch(task) {
+    const run = this.tronFetchQueue.then(async () => {
+      const minGapMs = this.tronApiKey ? 250 : 1150;
+      const waitMs = Math.max(0, minGapMs - (Date.now() - this.lastTronFetchAt));
+      if (waitMs > 0) await sleep(waitMs);
+
+      try {
+        return await task();
+      } catch (error) {
+        if (isRateLimitError(error)) {
+          await sleep(this.tronApiKey ? 1000 : 1800);
+          return task();
+        }
+
+        throw error;
+      } finally {
+        this.lastTronFetchAt = Date.now();
+      }
+    });
+
+    this.tronFetchQueue = run.catch(() => {});
+    return run;
+  }
+
+  async doTronFetch(url) {
     const headers = {};
     if (this.tronApiKey) headers['TRON-PRO-API-KEY'] = this.tronApiKey;
 
@@ -403,17 +429,17 @@ class BalanceMonitor {
   }
 
   async getTronAccount(address) {
-    const url = `${this.tronFullHost}/v1/accounts/${encodeURIComponent(address)}`;
-    const headers = {};
-    if (this.tronApiKey) headers['TRON-PRO-API-KEY'] = this.tronApiKey;
-
-    const response = await fetch(url, { headers });
-    if (!response.ok) {
-      throw new Error(`TRON API error ${response.status}: ${await response.text()}`);
+    const cacheKey = String(address);
+    const cached = this.tronAccountCache.get(cacheKey);
+    if (cached && Date.now() - cached.time < Math.max(this.tronPollMs, 5000)) {
+      return cached.account;
     }
 
-    const json = await response.json();
-    return Array.isArray(json.data) ? json.data[0] : null;
+    const url = `${this.tronFullHost}/v1/accounts/${encodeURIComponent(address)}`;
+    const json = await this.tronFetch(url);
+    const account = Array.isArray(json.data) ? json.data[0] : null;
+    this.tronAccountCache.set(cacheKey, { time: Date.now(), account });
+    return account;
   }
 
   status() {
@@ -465,6 +491,14 @@ function formatSource(source) {
   if (text === 'manual check') return '手動檢查';
   if (text.startsWith('block ')) return `區塊 ${text.slice(6)}`;
   return text;
+}
+
+function isRateLimitError(error) {
+  return /TRON API error 429|request rate exceeded/i.test(String(error?.message || error));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 module.exports = BalanceMonitor;
