@@ -70,7 +70,7 @@ bot.use(async (ctx, next) => {
 });
 
 bot.start(async (ctx) => {
-  await ctx.reply('請先選擇地址類型。', mainMenu());
+  await ctx.reply('請選擇操作：', mainMenu());
 });
 
 bot.help(async (ctx) => {
@@ -217,7 +217,7 @@ bot.onText(async (ctx) => {
 
   if (text === '主菜單') {
     sessions.delete(chatId);
-    await ctx.reply('請先選擇地址類型。', mainMenu());
+    await ctx.reply('請選擇操作：', mainMenu());
     return;
   }
 
