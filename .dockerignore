@@ -1,0 +1,9 @@
+node_modules
+data
+.env
+bot.log
+bot.pid
+*.plist
+run-bot.sh
+.git
+.DS_Store
