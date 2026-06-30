@@ -36,6 +36,8 @@ let dailyCacheCleanupTimer = null;
 const store = new Store(storagePath);
 store.load();
 
+const usdtTrc20Contract = resolveUsdtTrc20Contract(process.env.USDT_TRC20_CONTRACT);
+
 const bot = new CurlTelegramBot(token, logger, {
   offsetPath: path.join(path.dirname(storagePath), 'telegram-offset.json'),
   updateTimeoutMs: telegramUpdateTimeoutMs,
@@ -53,7 +55,7 @@ const monitor = new BalanceMonitor({
   tronApiKey: process.env.TRON_API_KEY || '',
   tronPollMs: Number(process.env.TRON_POLL_MS || 3000),
   usdtErc20Contract: process.env.USDT_ERC20_CONTRACT || '0xdAC17F958D2ee523a2206206994597C13D831ec7',
-  usdtTrc20Contract: process.env.USDT_TRC20_CONTRACT || 'TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj',
+  usdtTrc20Contract,
   usdcErc20Contract: process.env.USDC_ERC20_CONTRACT || '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
   logger
 });
@@ -940,6 +942,15 @@ function normalizeAddress(asset, address) {
 
 function parseAdminUserIds(value) {
   return new Set(String(value || '').split(',').map((item) => item.trim()).filter(Boolean));
+}
+
+function resolveUsdtTrc20Contract(value) {
+  const contract = String(value || '').trim();
+  if (!contract || contract === 'TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj') {
+    return 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+  }
+
+  return contract;
 }
 
 function mainMenu() {
