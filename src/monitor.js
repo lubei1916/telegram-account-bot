@@ -33,7 +33,7 @@ class BalanceMonitor {
     this.etherscanApiKey = etherscanApiKey;
     this.tronFullHost = tronFullHost.replace(/\/$/, '');
     this.tronApiKey = tronApiKey;
-    this.tronPollMs = tronPollMs;
+    this.tronPollMs = this.tronApiKey ? tronPollMs : Math.max(Number(tronPollMs) || 3000, 10000);
     this.usdtErc20Contract = usdtErc20Contract;
     this.usdtTrc20Contract = usdtTrc20Contract;
     this.usdcErc20Contract = usdcErc20Contract;
