@@ -9,6 +9,9 @@ const ERC20_ABI = [
   'event Transfer(address indexed from, address indexed to, uint256 value)'
 ];
 const ERC20_IFACE = new Interface(ERC20_ABI);
+const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
+const ETH_RPC_TIMEOUT_MS = 20_000;
+const ETH_RECONNECT_MS = 5_000;
 
 class BalanceMonitor {
   constructor({
@@ -45,9 +48,12 @@ class BalanceMonitor {
     this.tronAccountCache = new Map();
     this.tronFetchQueue = Promise.resolve();
     this.lastTronFetchAt = 0;
+    this.ethReconnectTimer = null;
+    this.stopped = false;
   }
 
   async start() {
+    this.stopped = false;
     if (this.ethWsUrl) {
       await this.startEth();
     } else {
@@ -58,8 +64,15 @@ class BalanceMonitor {
   }
 
   async stop() {
+    this.stopped = true;
+    if (this.ethReconnectTimer) {
+      clearTimeout(this.ethReconnectTimer);
+      this.ethReconnectTimer = null;
+    }
+
     if (this.ethProvider) {
       await this.ethProvider.destroy();
+      this.ethProvider = null;
     }
 
     if (this.tronTimer) {
@@ -73,18 +86,45 @@ class BalanceMonitor {
   }
 
   async startEth() {
+    if (this.ethProvider) {
+      await this.ethProvider.destroy().catch((error) => {
+        this.logger.warn({ error: error.message }, 'Failed to destroy old Ethereum provider');
+      });
+      this.ethProvider = null;
+    }
+
     this.ethProvider = new WebSocketProvider(this.ethWsUrl);
     this.ethProvider.on('block', async (blockNumber) => {
       this.lastEthBlock = blockNumber;
-      await this.checkEth(blockNumber);
+      await this.checkEth(blockNumber).catch((error) => {
+        this.logger.error({ error: error.message, blockNumber }, 'Ethereum block check failed');
+      });
     });
     this.ethProvider.websocket.on('close', () => {
-      this.logger.error('Ethereum WebSocket closed; restart the process or use a process manager');
+      this.logger.error('Ethereum WebSocket closed; scheduling reconnect');
+      this.scheduleEthReconnect();
     });
     this.ethProvider.websocket.on('error', (error) => {
       this.logger.error({ error }, 'Ethereum WebSocket error');
     });
     this.logger.info('Ethereum monitor started');
+  }
+
+  scheduleEthReconnect() {
+    if (this.stopped || !this.ethWsUrl || this.ethReconnectTimer) return;
+
+    this.ethReconnectTimer = setTimeout(async () => {
+      this.ethReconnectTimer = null;
+      if (this.stopped) return;
+
+      try {
+        await this.startEth();
+        this.logger.info('Ethereum WebSocket reconnected');
+      } catch (error) {
+        this.logger.error({ error: error.message }, 'Ethereum WebSocket reconnect failed');
+        this.scheduleEthReconnect();
+      }
+    }, ETH_RECONNECT_MS);
   }
 
   startTron() {
@@ -192,13 +232,13 @@ class BalanceMonitor {
   async getBalance(asset, address) {
     if (asset === 'eth') {
       if (!this.ethProvider) throw new Error('ETH provider is not configured');
-      return this.ethProvider.getBalance(address);
+      return withTimeout(this.ethProvider.getBalance(address), ETH_RPC_TIMEOUT_MS, 'ETH balance query timed out');
     }
 
     if (asset === 'usdt-erc20' || asset === 'usdc-erc20') {
       if (!this.ethProvider) throw new Error('ETH provider is not configured');
       const contract = new Contract(this.getErc20Contract(asset), ERC20_ABI, this.ethProvider);
-      return contract.balanceOf(address);
+      return withTimeout(contract.balanceOf(address), ETH_RPC_TIMEOUT_MS, `${assetName(asset)} balance query timed out`);
     }
 
     if (asset === 'trx') {
@@ -340,7 +380,11 @@ class BalanceMonitor {
   }
 
   async getEthBlockTransactions(address, blockNumber) {
-    const block = await this.ethProvider.getBlock(blockNumber, true);
+    const block = await withTimeout(
+      this.ethProvider.getBlock(blockNumber, true),
+      ETH_RPC_TIMEOUT_MS,
+      'ETH block transaction query timed out'
+    );
     const transactions = block?.prefetchedTransactions || [];
     return transactions
       .filter((tx) => sameAddress(address, tx.from) || sameAddress(address, tx.to))
@@ -356,7 +400,11 @@ class BalanceMonitor {
 
   async getErc20BlockTransactions(address, blockNumber, asset = 'usdt-erc20') {
     const contract = new Contract(this.getErc20Contract(asset), ERC20_ABI, this.ethProvider);
-    const logs = await contract.queryFilter(contract.filters.Transfer(), blockNumber, blockNumber);
+    const logs = await withTimeout(
+      contract.queryFilter(contract.filters.Transfer(), blockNumber, blockNumber),
+      ETH_RPC_TIMEOUT_MS,
+      `${assetName(asset)} block log query timed out`
+    );
     const normalized = address.toLowerCase();
 
     return logs
@@ -418,7 +466,7 @@ class BalanceMonitor {
     const headers = {};
     if (this.tronApiKey) headers['TRON-PRO-API-KEY'] = this.tronApiKey;
 
-    const response = await fetch(url, { headers });
+    const response = await fetchWithTimeout(url, { headers }, DEFAULT_FETCH_TIMEOUT_MS);
     if (!response.ok) {
       throw new Error(`TRON API error ${response.status}: ${await response.text()}`);
     }
@@ -431,7 +479,7 @@ class BalanceMonitor {
       ...params,
       apikey: this.etherscanApiKey
     });
-    const response = await fetch(`https://api.etherscan.io/api?${search.toString()}`);
+    const response = await fetchWithTimeout(`https://api.etherscan.io/api?${search.toString()}`, {}, DEFAULT_FETCH_TIMEOUT_MS);
     if (!response.ok) {
       throw new Error(`Etherscan API error ${response.status}: ${await response.text()}`);
     }
@@ -516,6 +564,36 @@ function isRateLimitError(error) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs} ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 module.exports = BalanceMonitor;
