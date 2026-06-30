@@ -28,6 +28,13 @@ const ASSETS = {
     name: 'USDT-ERC20',
     symbol: 'USDT',
     decimals: 6
+  },
+  'usdc-erc20': {
+    id: 'usdc-erc20',
+    chain: 'ethereum',
+    name: 'USDC-ERC20',
+    symbol: 'USDC',
+    decimals: 6
   }
 };
 
@@ -63,6 +70,7 @@ function normalizeAsset(asset) {
   if (normalized === 'trx' || normalized === 'tron') return 'trx';
   if (normalized === 'usdt-trc20' || normalized === 'trc20' || normalized === 'tron-usdt') return 'usdt-trc20';
   if (normalized === 'usdt-erc20' || normalized === 'erc20' || normalized === 'eth-usdt') return 'usdt-erc20';
+  if (normalized === 'usdc-erc20' || normalized === 'eth-usdc' || normalized === 'usdc') return 'usdc-erc20';
   return null;
 }
 
