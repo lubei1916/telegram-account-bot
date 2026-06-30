@@ -22,6 +22,7 @@ class BalanceMonitor {
     etherscanApiBase,
     tronFullHost,
     tronscanApiBase,
+    tronscanApiKey,
     tronApiKey,
     tronPollMs,
     usdtErc20Contract,
@@ -36,6 +37,7 @@ class BalanceMonitor {
     this.etherscanApiBase = String(etherscanApiBase || 'https://api.etherscan.io/api').replace(/\/$/, '');
     this.tronFullHost = tronFullHost.replace(/\/$/, '');
     this.tronscanApiBase = String(tronscanApiBase || 'https://apilist.tronscanapi.com/api').replace(/\/$/, '');
+    this.tronscanApiKey = tronscanApiKey;
     this.tronApiKey = tronApiKey;
     this.tronPollMs = this.tronApiKey ? tronPollMs : Math.max(Number(tronPollMs) || 3000, 10000);
     this.usdtErc20Contract = usdtErc20Contract;
@@ -298,9 +300,10 @@ class BalanceMonitor {
   }
 
   async withTronscanFallback(asset, address, primaryQuery) {
+    const hasFallback = Boolean(this.tronscanApiBase && this.tronscanApiKey);
     try {
       const balance = BigInt(await primaryQuery());
-      if (balance !== 0n) return balance;
+      if (balance !== 0n || !hasFallback) return balance;
 
       const fallback = await this.getTronscanBalance(asset, address).catch((error) => {
         this.logger.warn({ error: error.message, asset, address }, 'Tronscan fallback balance query failed');
@@ -313,6 +316,8 @@ class BalanceMonitor {
 
       return balance;
     } catch (error) {
+      if (!hasFallback) throw error;
+
       const fallback = await this.getTronscanBalance(asset, address).catch((fallbackError) => {
         this.logger.warn({ error: fallbackError.message, asset, address }, 'Tronscan fallback balance query failed');
         return null;
@@ -328,6 +333,7 @@ class BalanceMonitor {
 
   async getTronscanBalance(asset, address) {
     if (!this.tronscanApiBase) throw new Error('TRONSCAN_API_BASE is not configured');
+    if (!this.tronscanApiKey) throw new Error('TRONSCAN_API_KEY is not configured');
 
     if (asset === 'trx') {
       const search = new URLSearchParams({ address });
@@ -631,7 +637,9 @@ class BalanceMonitor {
   }
 
   async tronscanFetch(path) {
-    const response = await fetchWithTimeout(`${this.tronscanApiBase}${path}`, {}, DEFAULT_FETCH_TIMEOUT_MS);
+    const response = await fetchWithTimeout(`${this.tronscanApiBase}${path}`, {
+      headers: { 'TRONSCAN-API-KEY': this.tronscanApiKey }
+    }, DEFAULT_FETCH_TIMEOUT_MS);
     if (!response.ok) {
       throw new Error(`Tronscan API error ${response.status}: ${await response.text()}`);
     }
@@ -663,7 +671,7 @@ class BalanceMonitor {
       usdtTrc20Contract: this.usdtTrc20Contract,
       usdcErc20Contract: this.usdcErc20Contract,
       etherscanEnabled: Boolean(this.etherscanApiKey),
-      tronscanEnabled: Boolean(this.tronscanApiBase),
+      tronscanEnabled: Boolean(this.tronscanApiBase && this.tronscanApiKey),
       watchers: this.store.listAll().length
     };
   }
