@@ -10,6 +10,16 @@ const { assetName, formatAssetBalance, normalizeAsset } = require('./format');
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
+process.on('uncaughtException', (error) => {
+  logger.fatal({ error }, 'Uncaught exception; exiting for platform restart');
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.fatal({ error: reason }, 'Unhandled rejection; exiting for platform restart');
+  process.exit(1);
+});
+
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
   throw new Error('TELEGRAM_BOT_TOKEN is required');
@@ -19,13 +29,17 @@ const storagePath = path.resolve(process.env.STORAGE_PATH || './data/watchers.js
 const adminUserIds = parseAdminUserIds(process.env.ADMIN_USER_IDS);
 const sessions = new Map();
 const dailyCacheCleanupMs = Number(process.env.DAILY_CACHE_CLEANUP_MS || 24 * 60 * 60 * 1000);
+const telegramUpdateTimeoutMs = Number(process.env.TELEGRAM_UPDATE_TIMEOUT_MS || 45_000);
+const telegramWatchdogMs = Number(process.env.TELEGRAM_WATCHDOG_MS || 120_000);
 let dailyCacheCleanupTimer = null;
 
 const store = new Store(storagePath);
 store.load();
 
 const bot = new CurlTelegramBot(token, logger, {
-  offsetPath: path.join(path.dirname(storagePath), 'telegram-offset.json')
+  offsetPath: path.join(path.dirname(storagePath), 'telegram-offset.json'),
+  updateTimeoutMs: telegramUpdateTimeoutMs,
+  watchdogMs: telegramWatchdogMs
 });
 const monitor = new BalanceMonitor({
   store,
