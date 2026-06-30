@@ -13,6 +13,7 @@ class CurlTelegramBot {
     this.running = false;
     this.offsetPath = options.offsetPath || '';
     this.offset = this.loadOffset();
+    this.updateTimeoutMs = Number(options.updateTimeoutMs || 45_000);
     this.telegram = {
       sendMessage: (chatId, text, options = {}) => {
         const payload = {
@@ -75,7 +76,15 @@ class CurlTelegramBot {
         for (const update of updates.result || []) {
           this.offset = Math.max(this.offset, update.update_id + 1);
           this.saveOffset();
-          await this.handleUpdate(update);
+          try {
+            await withTimeout(
+              this.handleUpdate(update),
+              this.updateTimeoutMs,
+              `Telegram update ${update.update_id} handling timed out after ${this.updateTimeoutMs} ms`
+            );
+          } catch (error) {
+            this.logger.error({ error: error.message, updateId: update.update_id }, 'Telegram update handling failed');
+          }
         }
       } catch (error) {
         this.logger.error({ error: error.message }, 'Telegram polling failed');
@@ -224,6 +233,17 @@ function execCurl(args, timeout) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 module.exports = CurlTelegramBot;
