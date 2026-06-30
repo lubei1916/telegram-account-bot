@@ -342,6 +342,7 @@ bot.catch((error, ctx) => {
 async function main() {
   await monitor.start();
   startDailyCacheCleanup();
+  await syncBotCommands();
   await bot.launch();
   logger.info({ storagePath }, 'Telegram balance monitor bot started');
 }
@@ -377,6 +378,17 @@ function startDailyCacheCleanup() {
   }, dailyCacheCleanupMs);
   dailyCacheCleanupTimer.unref?.();
   logger.info({ dailyCacheCleanupMs }, 'Daily cache cleanup scheduled');
+}
+
+async function syncBotCommands() {
+  await bot.telegram.setMyCommands([
+    { command: 'start', description: '打開主菜單' },
+    { command: 'menu', description: '回到主菜單' },
+    { command: 'list', description: '查看監控列表' },
+    { command: 'balance', description: '打開餘額查詢菜單' },
+    { command: 'status', description: '查看 bot 狀態' }
+  ]);
+  logger.info('Telegram command menu synced');
 }
 
 async function beginSingleAdd(ctx, asset) {
