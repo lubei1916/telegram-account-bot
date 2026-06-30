@@ -1,0 +1,26 @@
+{
+  "name": "telegram-chain-balance-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for near-real-time ETH and TRX account balance monitoring.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/store.js && node --check src/monitor.js && node --check src/format.js"
+  },
+  "keywords": [
+    "telegram",
+    "ethereum",
+    "tron",
+    "balance-monitor"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "ethers": "^6.13.5",
+    "pino": "^9.5.0",
+    "tronweb": "^6.0.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
