@@ -258,15 +258,31 @@ class BalanceMonitor {
   }
 
   async getTrc20Balance(address, contractAddress) {
-    const account = await this.getTronAccount(address);
-    const tokens = Array.isArray(account?.trc20) ? account.trc20 : [];
-    const token = tokens.find((item) => {
-      return Object.keys(item)[0] === contractAddress;
+    this.initTronWeb();
+
+    const ownerAddress = this.tronWeb.address.toHex(address);
+    const contractHex = this.tronWeb.address.toHex(contractAddress);
+    const parameter = encodeTronAddressParameter(ownerAddress);
+    const json = await this.tronFetch(`${this.tronFullHost}/wallet/triggerconstantcontract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        owner_address: ownerAddress,
+        contract_address: contractHex,
+        function_selector: 'balanceOf(address)',
+        parameter,
+        visible: false
+      })
     });
 
-    if (!token) return 0n;
+    if (json.result && json.result.result === false) {
+      throw new Error(`TRC20 balance query failed: ${json.result.message || 'unknown error'}`);
+    }
 
-    return BigInt(token[contractAddress] || 0);
+    const balanceHex = json.constant_result?.[0];
+    if (!balanceHex) return 0n;
+
+    return BigInt(`0x${balanceHex}`);
   }
 
   async getTransactions(asset, address, limit = 5) {
@@ -428,8 +444,8 @@ class BalanceMonitor {
       }));
   }
 
-  async tronFetch(url) {
-    return this.enqueueTronFetch(() => this.doTronFetch(url));
+  async tronFetch(url, options = {}) {
+    return this.enqueueTronFetch(() => this.doTronFetch(url, options));
   }
 
   getErc20Contract(asset) {
@@ -440,7 +456,7 @@ class BalanceMonitor {
 
   async enqueueTronFetch(task) {
     const run = this.tronFetchQueue.then(async () => {
-      const minGapMs = this.tronApiKey ? 250 : 1150;
+      const minGapMs = this.tronApiKey ? 250 : 2500;
       const waitMs = Math.max(0, minGapMs - (Date.now() - this.lastTronFetchAt));
       if (waitMs > 0) await sleep(waitMs);
 
@@ -448,7 +464,7 @@ class BalanceMonitor {
         return await task();
       } catch (error) {
         if (isRateLimitError(error)) {
-          await sleep(this.tronApiKey ? 1000 : 1800);
+          await sleep(this.tronApiKey ? 1000 : 4500);
           return task();
         }
 
@@ -462,11 +478,11 @@ class BalanceMonitor {
     return run;
   }
 
-  async doTronFetch(url) {
-    const headers = {};
+  async doTronFetch(url, options = {}) {
+    const headers = { ...(options.headers || {}) };
     if (this.tronApiKey) headers['TRON-PRO-API-KEY'] = this.tronApiKey;
 
-    const response = await fetchWithTimeout(url, { headers }, DEFAULT_FETCH_TIMEOUT_MS);
+    const response = await fetchWithTimeout(url, { ...options, headers }, DEFAULT_FETCH_TIMEOUT_MS);
     if (!response.ok) {
       throw new Error(`TRON API error ${response.status}: ${await response.text()}`);
     }
@@ -560,6 +576,15 @@ function formatSource(source) {
 
 function isRateLimitError(error) {
   return /TRON API error 429|request rate exceeded/i.test(String(error?.message || error));
+}
+
+function encodeTronAddressParameter(hexAddress) {
+  const withoutPrefix = String(hexAddress || '').replace(/^0x/i, '').replace(/^41/i, '');
+  if (!/^[0-9a-fA-F]{40}$/.test(withoutPrefix)) {
+    throw new Error('Invalid TRON address for contract call');
+  }
+
+  return withoutPrefix.padStart(64, '0');
 }
 
 function sleep(ms) {
