@@ -19,7 +19,9 @@ class BalanceMonitor {
     bot,
     ethWsUrl,
     etherscanApiKey,
+    etherscanApiBase,
     tronFullHost,
+    tronscanApiBase,
     tronApiKey,
     tronPollMs,
     usdtErc20Contract,
@@ -31,7 +33,9 @@ class BalanceMonitor {
     this.bot = bot;
     this.ethWsUrl = ethWsUrl;
     this.etherscanApiKey = etherscanApiKey;
+    this.etherscanApiBase = String(etherscanApiBase || 'https://api.etherscan.io/api').replace(/\/$/, '');
     this.tronFullHost = tronFullHost.replace(/\/$/, '');
+    this.tronscanApiBase = String(tronscanApiBase || 'https://apilist.tronscanapi.com/api').replace(/\/$/, '');
     this.tronApiKey = tronApiKey;
     this.tronPollMs = this.tronApiKey ? tronPollMs : Math.max(Number(tronPollMs) || 3000, 10000);
     this.usdtErc20Contract = usdtErc20Contract;
@@ -231,22 +235,30 @@ class BalanceMonitor {
 
   async getBalance(asset, address) {
     if (asset === 'eth') {
-      if (!this.ethProvider) throw new Error('ETH provider is not configured');
-      return withTimeout(this.ethProvider.getBalance(address), ETH_RPC_TIMEOUT_MS, 'ETH balance query timed out');
+      if (!this.ethProvider) return this.getEtherscanBalance(asset, address);
+      return this.withEtherscanFallback(
+        asset,
+        address,
+        () => withTimeout(this.ethProvider.getBalance(address), ETH_RPC_TIMEOUT_MS, 'ETH balance query timed out')
+      );
     }
 
     if (asset === 'usdt-erc20' || asset === 'usdc-erc20') {
-      if (!this.ethProvider) throw new Error('ETH provider is not configured');
+      if (!this.ethProvider) return this.getEtherscanBalance(asset, address);
       const contract = new Contract(this.getErc20Contract(asset), ERC20_ABI, this.ethProvider);
-      return withTimeout(contract.balanceOf(address), ETH_RPC_TIMEOUT_MS, `${assetName(asset)} balance query timed out`);
+      return this.withEtherscanFallback(
+        asset,
+        address,
+        () => withTimeout(contract.balanceOf(address), ETH_RPC_TIMEOUT_MS, `${assetName(asset)} balance query timed out`)
+      );
     }
 
     if (asset === 'trx') {
-      return this.getTrxBalance(address);
+      return this.withTronscanFallback(asset, address, () => this.getTrxBalance(address));
     }
 
     if (asset === 'usdt-trc20') {
-      return this.getTrc20Balance(address, this.usdtTrc20Contract);
+      return this.withTronscanFallback(asset, address, () => this.getTrc20Balance(address, this.usdtTrc20Contract));
     }
 
     throw new Error(`Unsupported asset: ${asset}`);
@@ -283,6 +295,116 @@ class BalanceMonitor {
     if (!balanceHex) return 0n;
 
     return BigInt(`0x${balanceHex}`);
+  }
+
+  async withTronscanFallback(asset, address, primaryQuery) {
+    try {
+      const balance = BigInt(await primaryQuery());
+      if (balance !== 0n) return balance;
+
+      const fallback = await this.getTronscanBalance(asset, address).catch((error) => {
+        this.logger.warn({ error: error.message, asset, address }, 'Tronscan fallback balance query failed');
+        return null;
+      });
+      if (fallback !== null && fallback !== 0n) {
+        this.logger.warn({ asset, address }, 'Primary TRON balance was zero; using Tronscan fallback balance');
+        return fallback;
+      }
+
+      return balance;
+    } catch (error) {
+      const fallback = await this.getTronscanBalance(asset, address).catch((fallbackError) => {
+        this.logger.warn({ error: fallbackError.message, asset, address }, 'Tronscan fallback balance query failed');
+        return null;
+      });
+      if (fallback !== null) {
+        this.logger.warn({ error: error.message, asset, address }, 'Primary TRON balance query failed; using Tronscan fallback balance');
+        return fallback;
+      }
+
+      throw error;
+    }
+  }
+
+  async getTronscanBalance(asset, address) {
+    if (!this.tronscanApiBase) throw new Error('TRONSCAN_API_BASE is not configured');
+
+    if (asset === 'trx') {
+      const search = new URLSearchParams({ address });
+      const json = await this.tronscanFetch(`/account?${search.toString()}`);
+      return BigInt(json.balance || json.account?.balance || 0);
+    }
+
+    if (asset === 'usdt-trc20') {
+      const search = new URLSearchParams({ address, start: '0', limit: '50' });
+      const json = await this.tronscanFetch(`/account/tokens?${search.toString()}`);
+      const tokens = [
+        ...(Array.isArray(json.data) ? json.data : []),
+        ...(Array.isArray(json.tokens) ? json.tokens : [])
+      ];
+      const token = tokens.find((item) => isTronscanTokenMatch(item, this.usdtTrc20Contract, 'USDT'));
+      if (!token) return 0n;
+
+      return parseTronscanTokenBalance(token);
+    }
+
+    throw new Error(`Unsupported Tronscan asset: ${asset}`);
+  }
+
+  async withEtherscanFallback(asset, address, primaryQuery) {
+    try {
+      const balance = BigInt(await primaryQuery());
+      if (balance !== 0n || !this.etherscanApiKey) return balance;
+
+      const fallback = await this.getEtherscanBalance(asset, address).catch((error) => {
+        this.logger.warn({ error: error.message, asset, address }, 'Etherscan fallback balance query failed');
+        return null;
+      });
+      if (fallback !== null && fallback !== 0n) {
+        this.logger.warn({ asset, address }, 'Primary Ethereum balance was zero; using Etherscan fallback balance');
+        return fallback;
+      }
+
+      return balance;
+    } catch (error) {
+      const fallback = await this.getEtherscanBalance(asset, address).catch((fallbackError) => {
+        this.logger.warn({ error: fallbackError.message, asset, address }, 'Etherscan fallback balance query failed');
+        return null;
+      });
+      if (fallback !== null) {
+        this.logger.warn({ error: error.message, asset, address }, 'Primary Ethereum balance query failed; using Etherscan fallback balance');
+        return fallback;
+      }
+
+      throw error;
+    }
+  }
+
+  async getEtherscanBalance(asset, address) {
+    if (!this.etherscanApiKey) throw new Error('ETHERSCAN_API_KEY is not configured');
+
+    if (asset === 'eth') {
+      const json = await this.etherscanFetch({
+        module: 'account',
+        action: 'balance',
+        address,
+        tag: 'latest'
+      });
+      return BigInt(json.result || 0);
+    }
+
+    if (asset === 'usdt-erc20' || asset === 'usdc-erc20') {
+      const json = await this.etherscanFetch({
+        module: 'account',
+        action: 'tokenbalance',
+        contractaddress: this.getErc20Contract(asset),
+        address,
+        tag: 'latest'
+      });
+      return BigInt(json.result || 0);
+    }
+
+    throw new Error(`Unsupported Etherscan asset: ${asset}`);
   }
 
   async getTransactions(asset, address, limit = 5) {
@@ -495,7 +617,7 @@ class BalanceMonitor {
       ...params,
       apikey: this.etherscanApiKey
     });
-    const response = await fetchWithTimeout(`https://api.etherscan.io/api?${search.toString()}`, {}, DEFAULT_FETCH_TIMEOUT_MS);
+    const response = await fetchWithTimeout(`${this.etherscanApiBase}?${search.toString()}`, {}, DEFAULT_FETCH_TIMEOUT_MS);
     if (!response.ok) {
       throw new Error(`Etherscan API error ${response.status}: ${await response.text()}`);
     }
@@ -506,6 +628,15 @@ class BalanceMonitor {
     }
 
     return json;
+  }
+
+  async tronscanFetch(path) {
+    const response = await fetchWithTimeout(`${this.tronscanApiBase}${path}`, {}, DEFAULT_FETCH_TIMEOUT_MS);
+    if (!response.ok) {
+      throw new Error(`Tronscan API error ${response.status}: ${await response.text()}`);
+    }
+
+    return response.json();
   }
 
   async getTronAccount(address) {
@@ -531,7 +662,8 @@ class BalanceMonitor {
       usdtErc20Contract: this.usdtErc20Contract,
       usdtTrc20Contract: this.usdtTrc20Contract,
       usdcErc20Contract: this.usdcErc20Contract,
-      etherscanHistoryEnabled: Boolean(this.etherscanApiKey),
+      etherscanEnabled: Boolean(this.etherscanApiKey),
+      tronscanEnabled: Boolean(this.tronscanApiBase),
       watchers: this.store.listAll().length
     };
   }
@@ -576,6 +708,34 @@ function formatSource(source) {
 
 function isRateLimitError(error) {
   return /TRON API error 429|request rate exceeded/i.test(String(error?.message || error));
+}
+
+function isTronscanTokenMatch(token, contractAddress, symbol) {
+  const tokenAddress = token.tokenId || token.token_id || token.contract_address || token.tokenAddress || token.address;
+  if (tokenAddress && sameAddress(tokenAddress, contractAddress)) return true;
+
+  const tokenSymbol = token.tokenAbbr || token.tokenSymbol || token.symbol || token.name;
+  return String(tokenSymbol || '').toUpperCase() === String(symbol || '').toUpperCase();
+}
+
+function parseTronscanTokenBalance(token) {
+  const raw = token.balance ?? token.amount ?? token.quantity ?? token.tokenValue;
+  if (raw === null || raw === undefined || raw === '') return 0n;
+
+  const text = String(raw);
+  if (/^\d+$/.test(text)) return BigInt(text);
+
+  const decimals = Number(token.tokenDecimal ?? token.decimals ?? token.precision ?? 6);
+  return decimalToRawUnits(text, Number.isFinite(decimals) ? decimals : 6);
+}
+
+function decimalToRawUnits(value, decimals) {
+  const text = String(value || '0').trim();
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return 0n;
+
+  const [whole, fraction = ''] = text.split('.');
+  const paddedFraction = fraction.padEnd(decimals, '0').slice(0, decimals);
+  return BigInt(`${whole}${paddedFraction}` || '0');
 }
 
 function encodeTronAddressParameter(hexAddress) {
