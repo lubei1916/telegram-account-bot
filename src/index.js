@@ -658,6 +658,8 @@ function mainMenu() {
       keyboard: [
         [{ text: 'TRON 地址' }, { text: 'ETH 地址' }],
         [{ text: '新增四幣種' }],
+        [{ text: 'TRX 刪除監控' }, { text: 'USDT-TRC20 刪除監控' }],
+        [{ text: 'ETH 刪除監控' }, { text: 'USDT-ERC20 刪除監控' }],
         [{ text: '監控列表' }, { text: '狀態' }]
       ],
       resize_keyboard: true
@@ -851,8 +853,9 @@ function helpText() {
     'ET 監控機器人',
     '',
     '推薦用法：直接點下方分類菜單。',
-    'TRON 地址：TRX / USDT-TRC20 新增、查餘額、查交易。',
-    'ETH 地址：ETH / USDT-ERC20 新增、查餘額、查交易。',
+    'TRON 地址：TRX / USDT-TRC20 新增、刪除、查餘額、查交易。',
+    'ETH 地址：ETH / USDT-ERC20 新增、刪除、查餘額、查交易。',
+    '主菜單也可以直接選擇刪除監控，再貼對應地址。',
     '新增流程：選分類 -> 選功能 -> 貼地址 -> 輸入備註。',
     '',
     '進階指令：',
