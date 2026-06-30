@@ -296,10 +296,11 @@ async function sendList(ctx) {
 
 async function sendStatus(ctx) {
   const status = monitor.status();
+  const currentChatWatchers = store.list(ctx.chat.id).length;
   await ctx.reply([
     '機器人狀態',
     `啟動時間：${status.startedAt.toISOString()}`,
-    `監控數量：${status.watchers}`,
+    `本聊天監控數量：${currentChatWatchers}`,
     `ETH 監控：${status.ethEnabled ? '已啟用' : '未啟用'}`,
     `最新 ETH 區塊：${status.lastEthBlock || '無'}`,
     `TRON 輪詢間隔：${status.tronPollMs} ms`,
