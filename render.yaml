@@ -1,0 +1,30 @@
+services:
+  - type: worker
+    name: et-chain-monitor-bot
+    runtime: docker
+    plan: starter
+    disk:
+      name: bot-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ETH_WS_URL
+        value: wss://ethereum-rpc.publicnode.com
+      - key: ETHERSCAN_API_KEY
+        sync: false
+      - key: TRON_FULL_HOST
+        value: https://api.trongrid.io
+      - key: TRON_API_KEY
+        sync: false
+      - key: USDT_ERC20_CONTRACT
+        value: 0xdAC17F958D2ee523a2206206994597C13D831ec7
+      - key: USDT_TRC20_CONTRACT
+        value: TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj
+      - key: TRON_POLL_MS
+        value: "3000"
+      - key: STORAGE_PATH
+        value: /app/data/watchers.json
+      - key: LOG_LEVEL
+        value: info
