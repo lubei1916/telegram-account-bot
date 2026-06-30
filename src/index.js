@@ -195,21 +195,6 @@ bot.command('balance', async (ctx) => {
   }
 });
 
-bot.command('tx', async (ctx) => {
-  try {
-    if (!hasCommandArgs(ctx.message.text)) {
-      await ctx.reply('請先選擇地址類型，再選擇要查詢的交易紀錄。', mainMenu());
-      return;
-    }
-
-    const { asset, address } = parseAddressCommand(ctx.message.text);
-    const transactions = await monitor.getTransactions(asset, address, 5);
-    await ctx.reply(formatTransactions(asset, address, transactions), { disable_web_page_preview: true, ...mainMenu() });
-  } catch (error) {
-    await ctx.reply(`查詢交易紀錄失敗：${errorMessage(error)}\n\n用法：/tx usdt-trc20 T地址`, mainMenu());
-  }
-});
-
 bot.command('status', async (ctx) => {
   await sendStatus(ctx);
 });
@@ -227,6 +212,12 @@ bot.onText(async (ctx) => {
   if (text === '主菜單') {
     sessions.delete(chatId);
     await ctx.reply('請先選擇地址類型。', mainMenu());
+    return;
+  }
+
+  if (isLegacyCategoryMenuButton(text)) {
+    sessions.delete(chatId);
+    await ctx.reply('這個菜單已停用。', mainMenu());
     return;
   }
 
@@ -436,7 +427,7 @@ async function handleSession(ctx, session, text) {
     return;
   }
 
-  if (session.mode === 'queryBalance' || session.mode === 'queryTx' || session.mode === 'deleteMonitor') {
+  if (session.mode === 'queryBalance' || session.mode === 'deleteMonitor') {
     await handleDirectQuerySession(ctx, session, text);
     return;
   }
@@ -617,15 +608,6 @@ async function handleCategoryReadySession(ctx, session, text) {
     return;
   }
 
-  if (action.kind === 'tx') {
-    const transactions = await monitor.getTransactions(action.asset, session.address, 5);
-    await ctx.reply(formatTransactions(action.asset, session.address, transactions), {
-      disable_web_page_preview: true,
-      ...addressActionKeyboard(session.chain)
-    });
-    return;
-  }
-
   const balance = await monitor.getBalance(action.asset, session.address);
   sessions.set(String(ctx.chat.id), {
     mode: 'categoryAddLabel',
@@ -695,9 +677,8 @@ async function handleDirectQuerySession(ctx, session, text) {
       return;
     }
 
-    const transactions = await monitor.getTransactions(session.asset, address, 5);
     sessions.delete(chatId);
-    await ctx.reply(formatTransactions(session.asset, address, transactions), { disable_web_page_preview: true, ...mainMenu() });
+    await ctx.reply('這個操作目前已停用。', mainMenu());
   } catch (error) {
     await ctx.reply(`查詢失敗：${errorMessage(error)}\n\n請重新發送地址，或返回上一層。`, backKeyboard(session.asset));
   }
@@ -995,7 +976,6 @@ function tronMenu() {
     reply_markup: {
       keyboard: [
         [{ text: '添加監控地址' }, { text: '查詢餘額' }],
-        [{ text: 'TRX 查交易' }, { text: 'USDT-TRC20 查交易' }],
         [{ text: '主菜單' }]
       ],
       resize_keyboard: true
@@ -1007,16 +987,11 @@ function addressActionFromText(chain, text) {
   const actions = chain === 'tron'
     ? {
         '添加監控地址': { kind: 'chainAdd' },
-        '查詢餘額': { kind: 'chainBalance' },
-        'TRX 查交易': { kind: 'tx', asset: 'trx' },
-        'USDT-TRC20 查交易': { kind: 'tx', asset: 'usdt-trc20' }
+        '查詢餘額': { kind: 'chainBalance' }
       }
     : {
         '添加監控地址': { kind: 'chainAdd' },
-        '查詢餘額': { kind: 'chainBalance' },
-        'ETH 查交易': { kind: 'tx', asset: 'eth' },
-        'USDT-ERC20 查交易': { kind: 'tx', asset: 'usdt-erc20' },
-        'USDC-ERC20 查交易': { kind: 'tx', asset: 'usdc-erc20' }
+        '查詢餘額': { kind: 'chainBalance' }
       };
 
   return actions[text];
@@ -1027,8 +1002,6 @@ function ethMenu() {
     reply_markup: {
       keyboard: [
         [{ text: '添加監控地址' }, { text: '查詢餘額' }],
-        [{ text: 'ETH 查交易' }, { text: 'USDT-ERC20 查交易' }],
-        [{ text: 'USDC-ERC20 查交易' }],
         [{ text: '主菜單' }]
       ],
       resize_keyboard: true
@@ -1104,6 +1077,10 @@ function isLegacyDeleteButton(text) {
   ].includes(text);
 }
 
+function isLegacyCategoryMenuButton(text) {
+  return text === '顯示分類菜單' || text === '显示分类菜单';
+}
+
 function classifiedActionFromText(text) {
   return {
     'TRX 新增監控': { mode: 'single', asset: 'trx', prompt: '新增 TRX 監控' },
@@ -1115,56 +1092,8 @@ function classifiedActionFromText(text) {
     'USDT-TRC20 查餘額': { mode: 'queryBalance', asset: 'usdt-trc20', prompt: '查詢 USDT-TRC20 餘額' },
     'ETH 查餘額': { mode: 'queryBalance', asset: 'eth', prompt: '查詢 ETH 餘額' },
     'USDT-ERC20 查餘額': { mode: 'queryBalance', asset: 'usdt-erc20', prompt: '查詢 USDT-ERC20 餘額' },
-    'USDC-ERC20 查餘額': { mode: 'queryBalance', asset: 'usdc-erc20', prompt: '查詢 USDC-ERC20 餘額' },
-    'TRX 查交易': { mode: 'queryTx', asset: 'trx', prompt: '查詢 TRX 交易紀錄' },
-    'USDT-TRC20 查交易': { mode: 'queryTx', asset: 'usdt-trc20', prompt: '查詢 USDT-TRC20 交易紀錄' },
-    'ETH 查交易': { mode: 'queryTx', asset: 'eth', prompt: '查詢 ETH 交易紀錄' },
-    'USDT-ERC20 查交易': { mode: 'queryTx', asset: 'usdt-erc20', prompt: '查詢 USDT-ERC20 交易紀錄' },
-    'USDC-ERC20 查交易': { mode: 'queryTx', asset: 'usdc-erc20', prompt: '查詢 USDC-ERC20 交易紀錄' }
+    'USDC-ERC20 查餘額': { mode: 'queryBalance', asset: 'usdc-erc20', prompt: '查詢 USDC-ERC20 餘額' }
   }[text];
-}
-
-function formatTransactions(asset, address, transactions) {
-  if (!transactions.length) {
-    return [
-      `最近交易紀錄：${assetName(asset)}`,
-      `地址：${address}`,
-      '',
-      '沒有查到最近交易。'
-    ].join('\n');
-  }
-
-  const lines = transactions.map((tx, index) => {
-    return [
-      `${index + 1}. ${formatDirection(tx.direction)} ${tx.amount ? formatAssetBalance(asset, tx.amount) : ''}`.trim(),
-      tx.counterparty ? `對手方：${tx.counterparty}` : null,
-      tx.hash ? `交易哈希：${tx.hash}` : null,
-      tx.time ? `時間：${new Date(tx.time).toISOString()}` : null,
-      tx.status ? `狀態：${formatStatus(tx.status)}` : null
-    ].filter(Boolean).join('\n');
-  });
-
-  return [
-    `最近交易紀錄：${assetName(asset)}`,
-    `地址：${address}`,
-    '',
-    ...lines
-  ].join('\n\n');
-}
-
-function formatDirection(direction) {
-  if (direction === 'in') return '轉入';
-  if (direction === 'out') return '轉出';
-  return '未知方向';
-}
-
-function formatStatus(status) {
-  const text = String(status || '');
-  if (text === 'success') return '成功';
-  if (text === 'failed') return '失敗';
-  if (text === 'confirmed') return '已確認';
-  if (text === 'pending block confirmation') return '區塊內待確認';
-  return text;
 }
 
 function helpText() {
@@ -1196,11 +1125,6 @@ function helpText() {
     '/balance usdt-trc20 T地址',
     '/balance usdt-erc20 0x地址',
     '/balance usdc-erc20 0x地址',
-    '/tx trx T地址',
-    '/tx usdt-trc20 T地址',
-    '/tx eth 0x地址',
-    '/tx usdt-erc20 0x地址',
-    '/tx usdc-erc20 0x地址',
     '/status'
   ].join('\n');
 }
