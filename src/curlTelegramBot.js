@@ -30,6 +30,9 @@ class CurlTelegramBot {
       },
       setMyCommands: (commands) => {
         return this.callApi('setMyCommands', { commands }, 15);
+      },
+      deleteMyCommands: () => {
+        return this.callApi('deleteMyCommands', {}, 15);
       }
     };
   }
