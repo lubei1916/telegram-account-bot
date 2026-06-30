@@ -27,6 +27,9 @@ class CurlTelegramBot {
 
         if (options.reply_markup) payload.reply_markup = options.reply_markup;
         return this.callApi('sendMessage', payload, 20);
+      },
+      setMyCommands: (commands) => {
+        return this.callApi('setMyCommands', { commands }, 15);
       }
     };
   }
