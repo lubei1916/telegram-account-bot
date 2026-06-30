@@ -353,7 +353,7 @@ async function handleSession(ctx, session, text) {
     return;
   }
 
-  if (session.mode === 'queryBalance' || session.mode === 'queryTx') {
+  if (session.mode === 'queryBalance' || session.mode === 'queryTx' || session.mode === 'deleteMonitor') {
     await handleDirectQuerySession(ctx, session, text);
     return;
   }
@@ -411,6 +411,16 @@ async function handleCategoryReadySession(ctx, session, text) {
     return;
   }
 
+  if (action.kind === 'delete') {
+    const removed = store.remove(ctx.chat.id, action.asset, session.address);
+    await ctx.reply([
+      removed ? '已刪除監控。' : '找不到這個監控項。',
+      `資產：${assetName(action.asset)}`,
+      `地址：${session.address}`
+    ].join('\n'), addressActionKeyboard(session.chain));
+    return;
+  }
+
   const balance = await monitor.getBalance(action.asset, session.address);
   sessions.set(String(ctx.chat.id), {
     mode: 'categoryAddLabel',
@@ -457,6 +467,17 @@ async function handleDirectQuerySession(ctx, session, text) {
 
   try {
     const address = normalizeAddress(session.asset, text);
+    if (session.mode === 'deleteMonitor') {
+      const removed = store.remove(ctx.chat.id, session.asset, address);
+      sessions.delete(chatId);
+      await ctx.reply([
+        removed ? '已刪除監控。' : '找不到這個監控項。',
+        `資產：${assetName(session.asset)}`,
+        `地址：${address}`
+      ].join('\n'), mainMenu());
+      return;
+    }
+
     if (session.mode === 'queryBalance') {
       const balance = await monitor.getBalance(session.asset, address);
       sessions.delete(chatId);
@@ -668,6 +689,7 @@ function tronMenu() {
     reply_markup: {
       keyboard: [
         [{ text: 'TRX 新增監控' }, { text: 'USDT-TRC20 新增監控' }],
+        [{ text: 'TRX 刪除監控' }, { text: 'USDT-TRC20 刪除監控' }],
         [{ text: 'TRX 查餘額' }, { text: 'USDT-TRC20 查餘額' }],
         [{ text: 'TRX 查交易' }, { text: 'USDT-TRC20 查交易' }],
         [{ text: '主菜單' }]
@@ -682,6 +704,8 @@ function addressActionFromText(chain, text) {
     ? {
         'TRX 新增監控': { kind: 'add', asset: 'trx' },
         'USDT-TRC20 新增監控': { kind: 'add', asset: 'usdt-trc20' },
+        'TRX 刪除監控': { kind: 'delete', asset: 'trx' },
+        'USDT-TRC20 刪除監控': { kind: 'delete', asset: 'usdt-trc20' },
         'TRX 查餘額': { kind: 'balance', asset: 'trx' },
         'USDT-TRC20 查餘額': { kind: 'balance', asset: 'usdt-trc20' },
         'TRX 查交易': { kind: 'tx', asset: 'trx' },
@@ -690,6 +714,8 @@ function addressActionFromText(chain, text) {
     : {
         'ETH 新增監控': { kind: 'add', asset: 'eth' },
         'USDT-ERC20 新增監控': { kind: 'add', asset: 'usdt-erc20' },
+        'ETH 刪除監控': { kind: 'delete', asset: 'eth' },
+        'USDT-ERC20 刪除監控': { kind: 'delete', asset: 'usdt-erc20' },
         'ETH 查餘額': { kind: 'balance', asset: 'eth' },
         'USDT-ERC20 查餘額': { kind: 'balance', asset: 'usdt-erc20' },
         'ETH 查交易': { kind: 'tx', asset: 'eth' },
@@ -704,6 +730,7 @@ function ethMenu() {
     reply_markup: {
       keyboard: [
         [{ text: 'ETH 新增監控' }, { text: 'USDT-ERC20 新增監控' }],
+        [{ text: 'ETH 刪除監控' }, { text: 'USDT-ERC20 刪除監控' }],
         [{ text: 'ETH 查餘額' }, { text: 'USDT-ERC20 查餘額' }],
         [{ text: 'ETH 查交易' }, { text: 'USDT-ERC20 查交易' }],
         [{ text: '主菜單' }]
@@ -761,6 +788,10 @@ function classifiedActionFromText(text) {
     'USDT-TRC20 新增監控': { mode: 'single', asset: 'usdt-trc20', prompt: '新增 USDT-TRC20 監控' },
     'ETH 新增監控': { mode: 'single', asset: 'eth', prompt: '新增 ETH 監控' },
     'USDT-ERC20 新增監控': { mode: 'single', asset: 'usdt-erc20', prompt: '新增 USDT-ERC20 監控' },
+    'TRX 刪除監控': { mode: 'deleteMonitor', asset: 'trx', prompt: '刪除 TRX 監控' },
+    'USDT-TRC20 刪除監控': { mode: 'deleteMonitor', asset: 'usdt-trc20', prompt: '刪除 USDT-TRC20 監控' },
+    'ETH 刪除監控': { mode: 'deleteMonitor', asset: 'eth', prompt: '刪除 ETH 監控' },
+    'USDT-ERC20 刪除監控': { mode: 'deleteMonitor', asset: 'usdt-erc20', prompt: '刪除 USDT-ERC20 監控' },
     'TRX 查餘額': { mode: 'queryBalance', asset: 'trx', prompt: '查詢 TRX 餘額' },
     'USDT-TRC20 查餘額': { mode: 'queryBalance', asset: 'usdt-trc20', prompt: '查詢 USDT-TRC20 餘額' },
     'ETH 查餘額': { mode: 'queryBalance', asset: 'eth', prompt: '查詢 ETH 餘額' },
